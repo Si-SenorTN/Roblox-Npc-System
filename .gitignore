@@ -1,0 +1,14 @@
+# Project place file
+/*.rbxlx
+/*.rbxl
+
+# Lock files (Studio place locks, wally.lock)
+*.lock
+
+# Wally install output
+Packages/
+ServerPackages/
+DevPackages/
+
+sourcemap.json
+.vscode

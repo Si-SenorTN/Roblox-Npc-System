@@ -1,0 +1,33 @@
+{
+	"name": "npcs-dev",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"Packages": {
+				"$path": "src/client/Packages",
+				"NpcController": {
+					"$path": "src/client"
+				}
+			}
+		},
+		"ServerScriptService": {
+			"ServerPackages": {
+				"$path": "src/server/Packages",
+				"NpcService": {
+					"$path": "src/server"
+				}
+			},
+			"Testing": {
+				"$path": "testing/server"
+			}
+		},
+		"StarterPlayer": {
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"Testing": {
+					"$path": "testing/client"
+				}
+			}
+		}
+	}
+}

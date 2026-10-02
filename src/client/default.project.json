@@ -1,0 +1,6 @@
+{
+	"name": "npc-controller",
+	"tree": {
+		"$path": "src"
+	}
+}

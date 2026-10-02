@@ -1,0 +1,19 @@
+[package]
+name = "si-senortn/npc-service"
+description = "Server side of the network optimized NPC system"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "server"
+# Only these paths are uploaded by `wally publish`
+include = [
+	"src",
+	"src/**",
+	"default.project.json",
+	"wally.toml",
+	"README.md",
+	"LICENSE",
+]
+
+[dependencies]
+Trove = "sleitnick/trove@1.8.0"
+Signal = "sleitnick/signal@2.0.3"

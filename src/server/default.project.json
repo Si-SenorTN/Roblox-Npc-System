@@ -1,0 +1,6 @@
+{
+	"name": "npc-service",
+	"tree": {
+		"$path": "src"
+	}
+}
