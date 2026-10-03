@@ -50,10 +50,21 @@ export type NpcRecord = {
 	Health: number,
 	MaxHealth: number,
 	IsDead: boolean,
+	-- The server's visibility flag for this player (SetPlayerVisibleFlag)
 	Visible: boolean,
+	-- Too far from the camera to render. Always false with culling disabled.
+	IsCulled: boolean,
+	-- The rig is in the world: Visible and not IsCulled. Only rendered rigs
+	-- are moved each frame.
+	IsRendered: boolean,
+	-- Default true. Change with SetCullingEnabled.
+	CullingEnabled: boolean,
+	-- This NPC's cull distance, or nil for NpcController's default. Change
+	-- with SetCullDistance.
+	CullDistance: number?,
 	ReplicationHz: number,
-	-- Starts in Running (firing StateChanged) the first time the NPC becomes
-	-- visible, so connect to it from NpcAdded
+	-- Starts in Running (firing StateChanged) the first time the NPC is
+	-- rendered, so connect to it from NpcAdded
 	StateMachine: StateMachine,
 
 	-- (speed)
@@ -63,6 +74,13 @@ export type NpcRecord = {
 	HealthChanged: Signal.Signal<number, number>,
 	Died: Signal.Signal<()>,
 	VisibilityChanged: Signal.Signal<boolean>,
+	-- (isRendered) The rig entered or left the world
+	RenderedChanged: Signal.Signal<boolean>,
+
+	-- false keeps the NPC rendered at any distance (while Visible)
+	SetCullingEnabled: (self: NpcRecord, enabled: boolean) -> (),
+	-- nil goes back to NpcController's default
+	SetCullDistance: (self: NpcRecord, distance: number?) -> (),
 }
 
 return nil

@@ -43,6 +43,10 @@ export type Internal = {
 	MaxHealth: number,
 	IsDead: boolean,
 	Visible: boolean,
+	IsCulled: boolean,
+	IsRendered: boolean,
+	CullingEnabled: boolean,
+	CullDistance: number?,
 	ReplicationHz: number,
 	StateMachine: Types.StateMachine,
 
@@ -51,6 +55,7 @@ export type Internal = {
 	HealthChanged: Signal.Signal<number, number>,
 	Died: Signal.Signal<()>,
 	VisibilityChanged: Signal.Signal<boolean>,
+	RenderedChanged: Signal.Signal<boolean>,
 
 	_context: Context,
 	-- Server timestamped transforms, oldest first. keyframes[1] is the last
@@ -64,6 +69,12 @@ export type Internal = {
 	_renderTime: number,
 	_modelConnection: RBXScriptConnection?,
 	_stateMachineStarted: boolean,
+	-- Culling state, owned by the Culling module
+	_cullCellKey: number?,
+	_nextCullCheck: number,
+	_cullSettingsChanged: boolean,
+	-- Set when the render timeline passes a teleport
+	_teleported: boolean,
 }
 
 local TAU = 2 * math.pi
@@ -81,23 +92,39 @@ local MIN_MOVE_SPEED = 0.05
 
 local NpcRecord = {}
 
+local Methods = {}
+local InternalMeta = { __index = Methods }
+-- Records are the keys, so a record nobody references can be collected
+local internals: { [NpcRecord]: Internal } = setmetatable({}, { __mode = "k" }) :: any
+
+local function internalOf(record: NpcRecord): Internal
+	local internal = internals[record]
+	if internal == nil then
+		error("Expected an NpcRecord, call methods with ':'", 3)
+	end
+	return internal
+end
+
 local function rejectWrite(_: unknown, key: unknown)
-	error(`NpcRecord.{tostring(key)} is read-only`, 2)
+	error(`NpcRecord.{tostring(key)} is read-only, use its methods instead`, 2)
 end
 
 local function targetDelay(self: Internal, latency: number): number
 	return latency + INTERPOLATION_INTERVALS / self.ReplicationHz
 end
 
-local function setVisible(self: Internal, visible: boolean)
-	if self.Visible == visible then
+-- The rig is in the world only while the server says it's visible and the
+-- client hasn't culled it
+local function refreshRendered(self: Internal)
+	local rendered = self.Visible and not self.IsCulled
+	if rendered == self.IsRendered then
 		return
 	end
-	self.Visible = visible
+	self.IsRendered = rendered
 
 	-- Start where a Humanoid starts, once the rig is in the world and whatever
 	-- drives its animations has had the chance to connect
-	if visible and not self._stateMachineStarted then
+	if rendered and not self._stateMachineStarted then
 		self._stateMachineStarted = true
 		self.StateMachine:SetState(Enum.HumanoidStateType.Running)
 		self.StateMachine.Running:Fire(self.MoveSpeed)
@@ -105,7 +132,7 @@ local function setVisible(self: Internal, visible: boolean)
 
 	local model = self.Model
 	if model then
-		if visible then
+		if rendered then
 			model:PivotTo(self.CFrame)
 			model.Parent = self._context.render
 		else
@@ -113,6 +140,15 @@ local function setVisible(self: Internal, visible: boolean)
 		end
 	end
 
+	self.RenderedChanged:Fire(rendered)
+end
+
+local function setVisible(self: Internal, visible: boolean)
+	if self.Visible == visible then
+		return
+	end
+	self.Visible = visible
+	refreshRendered(self)
 	self.VisibilityChanged:Fire(visible)
 end
 
@@ -183,6 +219,11 @@ function NpcRecord.new(
 		IsDead = health <= 0,
 		-- Applied through the timeline below, like every later change
 		Visible = false,
+		-- Culled until the first culling check says otherwise
+		IsCulled = true,
+		IsRendered = false,
+		CullingEnabled = true,
+		CullDistance = nil,
 		ReplicationHz = replicationHz,
 		StateMachine = StateMachine.new(),
 
@@ -191,6 +232,7 @@ function NpcRecord.new(
 		HealthChanged = Signal.new(),
 		Died = Signal.new(),
 		VisibilityChanged = Signal.new(),
+		RenderedChanged = Signal.new(),
 
 		_context = context,
 		_keyframes = { { t = t, position = position, velocity = velocity, heading = heading, snap = true } },
@@ -200,7 +242,12 @@ function NpcRecord.new(
 		_renderTime = -math.huge,
 		_modelConnection = nil,
 		_stateMachineStarted = false,
+		_cullCellKey = nil,
+		_nextCullCheck = 0,
+		_cullSettingsChanged = false,
+		_teleported = false,
 	}
+	setmetatable(internal :: any, InternalMeta)
 	internal._delay = targetDelay(internal, latency)
 	if visible then
 		local event: TimelineEvent = { kind = "Visibility", t = t, visible = true }
@@ -215,6 +262,7 @@ function NpcRecord.new(
 		end,
 		__metatable = "The metatable is locked",
 	}) :: any
+	internals[record] = internal
 
 	return internal, record
 end
@@ -230,10 +278,19 @@ function NpcRecord.attachModel(self: Internal, model: Model)
 			self.Model = nil
 		end
 	end)
-	if self.Visible then
+	if self.IsRendered then
 		model:PivotTo(self.CFrame)
 		model.Parent = self._context.render
 	end
+end
+
+-- Called by the Culling module.
+function NpcRecord.setCulled(self: Internal, culled: boolean)
+	if self.IsCulled == culled then
+		return
+	end
+	self.IsCulled = culled
+	refreshRendered(self)
 end
 
 function NpcRecord.addKeyframe(
@@ -319,6 +376,9 @@ function NpcRecord.update(self: Internal, now: number, latency: number, dt: numb
 
 	local keyframes = self._keyframes
 	while #keyframes >= 2 and keyframes[2].t <= renderTime do
+		if keyframes[2].snap then
+			self._teleported = true
+		end
 		table.remove(keyframes, 1)
 	end
 
@@ -358,7 +418,7 @@ function NpcRecord.update(self: Internal, now: number, latency: number, dt: numb
 		self.Heading = heading
 		self.CFrame = CFrame.new(position) * CFrame.Angles(0, heading, 0)
 		local model = self.Model
-		if model and self.Visible then
+		if model and self.IsRendered then
 			model:PivotTo(self.CFrame)
 		end
 	end
@@ -385,7 +445,31 @@ function NpcRecord.destroy(self: Internal)
 	self.HealthChanged:Destroy()
 	self.Died:Destroy()
 	self.VisibilityChanged:Destroy()
+	self.RenderedChanged:Destroy()
 	StateMachine.destroy(self.StateMachine)
+end
+
+function Methods.SetCullingEnabled(record: NpcRecord, enabled: boolean)
+	assert(typeof(enabled) == "boolean", "enabled must be a boolean")
+	local self = internalOf(record)
+	if self.CullingEnabled == enabled then
+		return
+	end
+	self.CullingEnabled = enabled
+	self._cullSettingsChanged = true
+end
+
+function Methods.SetCullDistance(record: NpcRecord, distance: number?)
+	assert(
+		distance == nil or (typeof(distance) == "number" and distance >= 0 and distance < math.huge),
+		"distance must be a non-negative finite number or nil"
+	)
+	local self = internalOf(record)
+	if self.CullDistance == distance then
+		return
+	end
+	self.CullDistance = distance
+	self._cullSettingsChanged = true
 end
 
 return NpcRecord

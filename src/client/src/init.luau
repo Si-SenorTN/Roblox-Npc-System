@@ -4,6 +4,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local Signal = require(script.Parent.Signal)
+local Culling = require(script.Culling)
 local NpcRecord = require(script.NpcRecord)
 local Protocol = require(script.Protocol)
 local Types = require(script.clientNpcTypes)
@@ -65,6 +66,7 @@ local function removeRecord(internal: Internal)
 	end
 
 	npcRemoving:Fire(record)
+	Culling.untrack(internal)
 	NpcRecord.destroy(internal)
 end
 
@@ -103,6 +105,7 @@ local function spawn(
 	)
 	internalsById[id] = internal
 	recordsById[id] = record
+	Culling.track(internal)
 
 	local name = tostring(id)
 	local model = currentContext.rigs:FindFirstChild(name)
@@ -226,9 +229,12 @@ end
 
 local function onRender(dt: number)
 	local now = advanceRenderClock(dt)
+	Culling.beginFrame(os.clock(), dt)
 	for _, internal in internalsById do
 		if NpcRecord.update(internal, now, latency, dt) then
 			removeRecord(internal)
+		else
+			Culling.updateRecord(internal)
 		end
 	end
 end
@@ -277,6 +283,21 @@ function NpcController.start()
 	local ready = buffer.create(1)
 	buffer.writeu8(ready, 0, Protocol.ClientOp.Ready)
 	reliable:FireServer(ready)
+end
+
+-- Sets the cull distance for NPCs without their own (see
+-- NpcRecord:SetCullDistance). Default 300 studs.
+function NpcController.setCullDistance(distance: number)
+	assert(
+		typeof(distance) == "number" and distance >= 0 and distance < math.huge,
+		"distance must be a non-negative finite number"
+	)
+	Culling.setDefaultDistance(distance)
+end
+
+-- Sets where cull distances are measured from. nil measures from the camera.
+function NpcController.setCullFocus(getFocus: (() -> Vector3)?)
+	Culling.setFocus(getFocus)
 end
 
 function NpcController.getRecord(id: number): NpcRecord?

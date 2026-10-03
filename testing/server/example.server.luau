@@ -6,7 +6,6 @@ local NpcService = require(ServerScriptService.ServerPackages.NpcService)
 
 local NPC_COUNT = 500
 local AREA = 500
-local CULL_DISTANCE = 125
 
 NpcService.start()
 
@@ -31,16 +30,6 @@ local function spawnNpc(index: number)
 		end
 	end)
 
-	npc.Think:Connect(function()
-		for _, player in Players:GetPlayers() do
-			if player:DistanceFromCharacter(npc.Position) > CULL_DISTANCE then
-				npc:SetPlayerVisibleFlag(player, false)
-			else
-				npc:SetPlayerVisibleFlag(player, true)
-			end
-		end
-	end)
-
 	npc.Died:Connect(function()
 		print(`[test] {npc.CustomData.Name} died`)
 		task.delay(3, function()
@@ -53,3 +42,17 @@ end
 for index = 1, NPC_COUNT do
 	spawnNpc(index)
 end
+
+-- Teleport NPC 1 between the center and far away, to check client culling
+-- re-checks it immediately
+task.spawn(function()
+	local far = true
+	while true do
+		task.wait(4)
+		local npc = NpcService.getRecord(1)
+		if npc and not npc.IsDead then
+			npc:Teleport(CFrame.new(if far then Vector3.new(0, 5, 20) else Vector3.new(900, 5, 900)))
+			far = not far
+		end
+	end
+end)
