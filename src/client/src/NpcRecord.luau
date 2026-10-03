@@ -1,6 +1,7 @@
 --!strict
 local Signal = require(script.Parent.Parent.Signal)
 local Protocol = require(script.Parent.Protocol)
+local StateMachine = require(script.Parent.StateMachine)
 local Types = require(script.Parent.clientNpcTypes)
 
 type NpcRecord = Types.NpcRecord
@@ -36,12 +37,17 @@ export type Internal = {
 	Position: Vector3,
 	Heading: number,
 	Velocity: Vector3,
+	MoveSpeed: number,
+	IsMoving: boolean,
 	Health: number,
 	MaxHealth: number,
 	IsDead: boolean,
 	Visible: boolean,
 	ReplicationHz: number,
+	StateMachine: Types.StateMachine,
 
+	MovementStarted: Signal.Signal<number>,
+	MovementStopped: Signal.Signal<()>,
 	HealthChanged: Signal.Signal<number, number>,
 	Died: Signal.Signal<()>,
 	VisibilityChanged: Signal.Signal<boolean>,
@@ -57,6 +63,7 @@ export type Internal = {
 	_delay: number,
 	_renderTime: number,
 	_modelConnection: RBXScriptConnection?,
+	_stateMachineStarted: boolean,
 }
 
 local TAU = 2 * math.pi
@@ -69,6 +76,8 @@ local MAX_KEYFRAMES = 64
 -- Stop extrapolating a keyframe after this long without a newer one. Only
 -- reached if packets were lost, the server sends moving NPCs every keepalive.
 local MAX_EXTRAPOLATION = Protocol.KEEPALIVE_INTERVAL * 2
+-- Slower than this counts as standing still, in studs per second
+local MIN_MOVE_SPEED = 0.05
 
 local NpcRecord = {}
 
@@ -86,6 +95,14 @@ local function setVisible(self: Internal, visible: boolean)
 	end
 	self.Visible = visible
 
+	-- Start where a Humanoid starts, once the rig is in the world and whatever
+	-- drives its animations has had the chance to connect
+	if visible and not self._stateMachineStarted then
+		self._stateMachineStarted = true
+		self.StateMachine:SetState(Enum.HumanoidStateType.Running)
+		self.StateMachine.Running:Fire(self.MoveSpeed)
+	end
+
 	local model = self.Model
 	if model then
 		if visible then
@@ -97,6 +114,31 @@ local function setVisible(self: Internal, visible: boolean)
 	end
 
 	self.VisibilityChanged:Fire(visible)
+end
+
+local function updateMoveSpeed(self: Internal, velocity: Vector3)
+	local speed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+	if speed < MIN_MOVE_SPEED then
+		speed = 0
+	end
+	if speed == self.MoveSpeed then
+		return
+	end
+	self.MoveSpeed = speed
+
+	local moving = speed > 0
+	if moving ~= self.IsMoving then
+		self.IsMoving = moving
+		if moving then
+			self.MovementStarted:Fire(speed)
+		else
+			self.MovementStopped:Fire()
+		end
+	end
+
+	if self._stateMachineStarted then
+		self.StateMachine.Running:Fire(speed)
+	end
 end
 
 local function applyHealth(self: Internal, health: number, maxHealth: number)
@@ -134,13 +176,18 @@ function NpcRecord.new(
 		Position = position,
 		Heading = heading,
 		Velocity = Vector3.zero,
+		MoveSpeed = 0,
+		IsMoving = false,
 		Health = health,
 		MaxHealth = maxHealth,
 		IsDead = health <= 0,
 		-- Applied through the timeline below, like every later change
 		Visible = false,
 		ReplicationHz = replicationHz,
+		StateMachine = StateMachine.new(),
 
+		MovementStarted = Signal.new(),
+		MovementStopped = Signal.new(),
 		HealthChanged = Signal.new(),
 		Died = Signal.new(),
 		VisibilityChanged = Signal.new(),
@@ -152,6 +199,7 @@ function NpcRecord.new(
 		_delay = 0,
 		_renderTime = -math.huge,
 		_modelConnection = nil,
+		_stateMachineStarted = false,
 	}
 	internal._delay = targetDelay(internal, latency)
 	if visible then
@@ -173,6 +221,10 @@ end
 
 function NpcRecord.attachModel(self: Internal, model: Model)
 	self.Model = model
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		self.StateMachine.WalkSpeed = humanoid.WalkSpeed
+	end
 	self._modelConnection = model.Destroying:Connect(function()
 		if self.Model == model then
 			self.Model = nil
@@ -279,6 +331,8 @@ function NpcRecord.update(self: Internal, now: number, latency: number, dt: numb
 	local position = from.position + from.velocity * elapsed
 	local heading = from.heading
 	local velocity = if elapsed < MAX_EXTRAPOLATION then from.velocity else Vector3.zero
+	-- The velocity the server reported for this moment, without the blending below
+	local reportedVelocity = velocity
 
 	if to and not to.snap then
 		-- Whatever `to` reports changed at most one replication interval
@@ -293,10 +347,12 @@ function NpcRecord.update(self: Internal, now: number, latency: number, dt: numb
 			local turn = (to.heading - from.heading + math.pi) % TAU - math.pi
 			heading = (from.heading + turn * alpha) % TAU
 			velocity = (to.position - startPosition) / span
+			reportedVelocity = to.velocity
 		end
 	end
 
 	self.Velocity = velocity
+	updateMoveSpeed(self, reportedVelocity)
 	if position ~= self.Position or heading ~= self.Heading then
 		self.Position = position
 		self.Heading = heading
@@ -324,9 +380,12 @@ function NpcRecord.destroy(self: Internal)
 		model:Destroy()
 	end
 
+	self.MovementStarted:Destroy()
+	self.MovementStopped:Destroy()
 	self.HealthChanged:Destroy()
 	self.Died:Destroy()
 	self.VisibilityChanged:Destroy()
+	StateMachine.destroy(self.StateMachine)
 end
 
 return NpcRecord
