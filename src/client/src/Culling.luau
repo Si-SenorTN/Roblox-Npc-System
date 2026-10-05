@@ -167,6 +167,11 @@ function Culling.setFocus(getter: (() -> Vector3)?)
 	refreshAll = true
 end
 
+-- Where distances were measured from this frame.
+function Culling.getFocus(): Vector3
+	return focus
+end
+
 function Culling.track(internal: Internal)
 	tracked[internal] = true
 	internal._nextCullCheck = 0

@@ -40,11 +40,19 @@ while true do
 	task.wait(5)
 	local camera = Workspace.CurrentCamera.CFrame.Position
 	local rendered, culled, wrongShown, wrongHidden = 0, 0, 0, 0
+	local placements: { [string]: number } = { Attached = 0, Parked = 0, Detached = 0 }
+	local healthMismatches = 0
 	local records = NpcController.getRecords()
 	for _, npc in records do
 		local distance = (npc.Position - camera).Magnitude
 		if npc.IsRendered then
 			rendered += 1
+		end
+		local placement = (npc :: any)._placement
+		placements[placement] += 1
+		local humanoid = npc.Model and npc.Model:FindFirstChildOfClass("Humanoid")
+		if humanoid and (humanoid.Health ~= npc.Health or humanoid.MaxHealth ~= npc.MaxHealth) then
+			healthMismatches += 1
 		end
 		if npc.IsCulled then
 			culled += 1
@@ -58,7 +66,9 @@ while true do
 	print(
 		`[test] {#records} NPCs, {rendered} rendered, {culled} culled, `
 			.. `wrongly culled {wrongHidden}, wrongly shown {wrongShown}, `
-			.. `{string.format("%.1f", checks / math.max(frames, 1))} checks/frame`
+			.. `{string.format("%.1f", checks / math.max(frames, 1))} checks/frame, `
+			.. `attached {placements.Attached}, parked {placements.Parked}, detached {placements.Detached}, `
+			.. `humanoid health mismatches {healthMismatches}`
 	)
 	checks, frames = 0, 0
 end

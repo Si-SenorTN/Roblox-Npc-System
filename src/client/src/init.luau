@@ -6,6 +6,7 @@ local Workspace = game:GetService("Workspace")
 local Signal = require(script.Parent.Signal)
 local Culling = require(script.Culling)
 local NpcRecord = require(script.NpcRecord)
+local Rendering = require(script.Rendering)
 local Protocol = require(script.Protocol)
 local Types = require(script.clientNpcTypes)
 
@@ -48,6 +49,8 @@ local pendingModels: { [string]: Internal } = {}
 -- Smoothed age of incoming packets, measured on the synced server clock
 local latency = 0
 local renderClock: number? = nil
+-- Rig moves collected over a frame and applied in one BulkMoveTo
+local moveBatch: NpcRecord.MoveBatch = { parts = {}, cframes = {} }
 
 local function observeTimestamp(t: number)
 	local age = math.max(Workspace:GetServerTimeNow() - t, 0)
@@ -67,6 +70,7 @@ local function removeRecord(internal: Internal)
 
 	npcRemoving:Fire(record)
 	Culling.untrack(internal)
+	Rendering.untrack(internal)
 	NpcRecord.destroy(internal)
 end
 
@@ -229,13 +233,22 @@ end
 
 local function onRender(dt: number)
 	local now = advanceRenderClock(dt)
-	Culling.beginFrame(os.clock(), dt)
+	local clock = os.clock()
+	Culling.beginFrame(clock, dt)
 	for _, internal in internalsById do
-		if NpcRecord.update(internal, now, latency, dt) then
+		if NpcRecord.update(internal, now, latency, dt, moveBatch) then
 			removeRecord(internal)
 		else
 			Culling.updateRecord(internal)
+			Rendering.updateRecord(internal, clock)
 		end
+	end
+	Rendering.endFrame(Culling.getFocus(), clock, moveBatch)
+
+	if #moveBatch.parts > 0 then
+		Workspace:BulkMoveTo(moveBatch.parts, moveBatch.cframes, Enum.BulkMoveMode.FireCFrameChanged)
+		table.clear(moveBatch.parts)
+		table.clear(moveBatch.cframes)
 	end
 end
 
@@ -298,6 +311,28 @@ end
 -- Sets where cull distances are measured from. nil measures from the camera.
 function NpcController.setCullFocus(getFocus: (() -> Vector3)?)
 	Culling.setFocus(getFocus)
+end
+
+-- How long a hidden rig stays parked out of sight in the world before it is
+-- moved out of it. Showing a parked rig again is just a move, so this saves
+-- work on NPCs that come back quickly. Default 2 seconds.
+function NpcController.setDetachDelay(seconds: number)
+	assert(
+		typeof(seconds) == "number" and seconds >= 0 and seconds < math.huge,
+		"seconds must be a non-negative finite number"
+	)
+	Rendering.setDetachDelay(seconds)
+end
+
+-- Milliseconds per frame spent moving rigs into and out of the world. Rigs
+-- waiting to be shown go nearest first, and at least one is shown every
+-- frame. Default 3, attaching a rig costs around 1-2 ms.
+function NpcController.setRenderBudget(milliseconds: number)
+	assert(
+		typeof(milliseconds) == "number" and milliseconds >= 0 and milliseconds < math.huge,
+		"milliseconds must be a non-negative finite number"
+	)
+	Rendering.setBudget(milliseconds)
 end
 
 function NpcController.getRecord(id: number): NpcRecord?

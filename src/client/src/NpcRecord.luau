@@ -75,6 +75,28 @@ export type Internal = {
 	_cullSettingsChanged: boolean,
 	-- Set when the render timeline passes a teleport
 	_teleported: boolean,
+	_humanoid: Humanoid?,
+	-- Where the rig physically is, owned by the Rendering module
+	_placement: Placement,
+	-- When a parked rig gets detached, in os.clock() time
+	_detachAt: number,
+	-- Set once the rig is known to move as one piece with its PrimaryPart, so
+	-- it can be moved with BulkMoveTo instead of PivotTo
+	_bulkRoot: BasePart?,
+	-- Inverse of the root's PivotOffset: root CFrame = pivot * this
+	_rootOffset: CFrame,
+	_bulkChecked: boolean,
+}
+
+-- Detached: in the server's rig folder. Attached: shown in the world.
+-- Parked: still in the world but moved out of sight, so showing it again is
+-- just a move.
+export type Placement = "Detached" | "Attached" | "Parked"
+
+-- Root parts and target CFrames, moved in one Workspace:BulkMoveTo per frame
+export type MoveBatch = {
+	parts: { BasePart },
+	cframes: { CFrame },
 }
 
 local TAU = 2 * math.pi
@@ -113,43 +135,24 @@ local function targetDelay(self: Internal, latency: number): number
 	return latency + INTERPOLATION_INTERVALS / self.ReplicationHz
 end
 
--- The rig is in the world only while the server says it's visible and the
--- client hasn't culled it
-local function refreshRendered(self: Internal)
-	local rendered = self.Visible and not self.IsCulled
-	if rendered == self.IsRendered then
-		return
-	end
-	self.IsRendered = rendered
-
-	-- Start where a Humanoid starts, once the rig is in the world and whatever
-	-- drives its animations has had the chance to connect
-	if rendered and not self._stateMachineStarted then
-		self._stateMachineStarted = true
-		self.StateMachine:SetState(Enum.HumanoidStateType.Running)
-		self.StateMachine.Running:Fire(self.MoveSpeed)
-	end
-
-	local model = self.Model
-	if model then
-		if rendered then
-			model:PivotTo(self.CFrame)
-			model.Parent = self._context.render
-		else
-			model.Parent = self._context.rigs
-		end
-	end
-
-	self.RenderedChanged:Fire(rendered)
-end
-
+-- Whether the rig should be shown. The Rendering module acts on it.
 local function setVisible(self: Internal, visible: boolean)
 	if self.Visible == visible then
 		return
 	end
 	self.Visible = visible
-	refreshRendered(self)
 	self.VisibilityChanged:Fire(visible)
+end
+
+-- Mirrors health onto the rig's Humanoid, if it has one, for health bars and
+-- anything else that reads it
+local function syncHumanoidHealth(self: Internal)
+	local humanoid = self._humanoid
+	if humanoid then
+		-- MaxHealth first, Health is clamped to it
+		humanoid.MaxHealth = self.MaxHealth
+		humanoid.Health = self.Health
+	end
 end
 
 local function updateMoveSpeed(self: Internal, velocity: Vector3)
@@ -181,6 +184,7 @@ local function applyHealth(self: Internal, health: number, maxHealth: number)
 	local old = self.Health
 	self.Health = health
 	self.MaxHealth = maxHealth
+	syncHumanoidHealth(self)
 	if health ~= old then
 		self.HealthChanged:Fire(health, old)
 	end
@@ -246,6 +250,12 @@ function NpcRecord.new(
 		_nextCullCheck = 0,
 		_cullSettingsChanged = false,
 		_teleported = false,
+		_humanoid = nil,
+		_placement = "Detached",
+		_detachAt = 0,
+		_bulkRoot = nil,
+		_rootOffset = CFrame.identity,
+		_bulkChecked = false,
 	}
 	setmetatable(internal :: any, InternalMeta)
 	internal._delay = targetDelay(internal, latency)
@@ -267,30 +277,80 @@ function NpcRecord.new(
 	return internal, record
 end
 
+-- The rig stays where the server put it until the Rendering module shows it.
 function NpcRecord.attachModel(self: Internal, model: Model)
 	self.Model = model
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if humanoid then
+		self._humanoid = humanoid
 		self.StateMachine.WalkSpeed = humanoid.WalkSpeed
+		syncHumanoidHealth(self)
 	end
 	self._modelConnection = model.Destroying:Connect(function()
 		if self.Model == model then
 			self.Model = nil
+			self._humanoid = nil
+			self._bulkRoot = nil
 		end
 	end)
-	if self.IsRendered then
-		model:PivotTo(self.CFrame)
-		model.Parent = self._context.render
+end
+
+-- Decides once, after the rig first enters the world, whether moving its
+-- PrimaryPart moves the whole rig. That holds when every part is in the root's
+-- assembly (welded or jointed to it), which is what lets BulkMoveTo replace
+-- PivotTo. Assemblies are only known inside the world, hence the timing.
+function NpcRecord.prepareBulkMove(self: Internal, model: Model)
+	if self._bulkChecked then
+		return
+	end
+	self._bulkChecked = true
+
+	local root = model.PrimaryPart
+	if root == nil or not root.Anchored then
+		return
+	end
+	local assembly = root.AssemblyRootPart
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") and descendant.AssemblyRootPart ~= assembly then
+			return
+		end
+	end
+	self._bulkRoot = root
+	self._rootOffset = root.PivotOffset:Inverse()
+end
+
+-- Puts the rig's pivot at `cframe`, batched when the rig allows it.
+function NpcRecord.placeModel(self: Internal, model: Model, cframe: CFrame, batch: MoveBatch)
+	local root = self._bulkRoot
+	if root then
+		table.insert(batch.parts, root)
+		table.insert(batch.cframes, cframe * self._rootOffset)
+	else
+		model:PivotTo(cframe)
 	end
 end
 
 -- Called by the Culling module.
 function NpcRecord.setCulled(self: Internal, culled: boolean)
-	if self.IsCulled == culled then
+	self.IsCulled = culled
+end
+
+-- Called by the Rendering module when the rig is shown or hidden.
+function NpcRecord.setRendered(self: Internal, rendered: boolean)
+	if self.IsRendered == rendered then
 		return
 	end
-	self.IsCulled = culled
-	refreshRendered(self)
+	self.IsRendered = rendered
+
+	-- Start where a Humanoid starts, once the rig is in the world and whatever
+	-- drives its animations has had the chance to connect
+	if rendered and not self._stateMachineStarted then
+		self._stateMachineStarted = true
+		self.StateMachine:SetState(Enum.HumanoidStateType.Running)
+		self.StateMachine.Running:Fire(self.MoveSpeed)
+	end
+
+	self.RenderedChanged:Fire(rendered)
 end
 
 function NpcRecord.addKeyframe(
@@ -356,7 +416,7 @@ end
 
 -- Advances the NPC to the current render time. Returns true once its despawn
 -- has been reached, after which the caller should destroy it.
-function NpcRecord.update(self: Internal, now: number, latency: number, dt: number): boolean
+function NpcRecord.update(self: Internal, now: number, latency: number, dt: number, batch: MoveBatch): boolean
 	self._delay += (targetDelay(self, latency) - self._delay) * math.min(dt * DELAY_SMOOTHING, 1)
 	-- Never step backwards in time when the delay grows
 	local renderTime = math.max(now - self._delay, self._renderTime)
@@ -419,7 +479,7 @@ function NpcRecord.update(self: Internal, now: number, latency: number, dt: numb
 		self.CFrame = CFrame.new(position) * CFrame.Angles(0, heading, 0)
 		local model = self.Model
 		if model and self.IsRendered then
-			model:PivotTo(self.CFrame)
+			NpcRecord.placeModel(self, model, self.CFrame, batch)
 		end
 	end
 

@@ -47,6 +47,7 @@ export type NpcRecord = {
 	-- reported, so it holds steady instead of following render corrections
 	MoveSpeed: number,
 	IsMoving: boolean,
+	-- Health and MaxHealth are copied onto the rig's Humanoid, if it has one
 	Health: number,
 	MaxHealth: number,
 	IsDead: boolean,
@@ -54,8 +55,9 @@ export type NpcRecord = {
 	Visible: boolean,
 	-- Too far from the camera to render. Always false with culling disabled.
 	IsCulled: boolean,
-	-- The rig is in the world: Visible and not IsCulled. Only rendered rigs
-	-- are moved each frame.
+	-- The rig is shown in the world. Follows Visible and not IsCulled, but
+	-- showing can trail by a few frames when many rigs appear at once (see
+	-- NpcController.setRenderBudget). Only rendered rigs are moved each frame.
 	IsRendered: boolean,
 	-- Default true. Change with SetCullingEnabled.
 	CullingEnabled: boolean,
