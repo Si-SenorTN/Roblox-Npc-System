@@ -42,6 +42,10 @@ export type NpcConfig = {
 	-- Move the rig's pivot so its bounding box bottom sits on the hitbox bottom.
 	-- Default true.
 	AlignRigToHitbox: boolean?,
+	-- A number sent to clients once, when the NPC is created. Cheaper than
+	-- CustomData for things like picking an appearance. Whole number from 0 to
+	-- 4294967295, default 0.
+	Variant: number?,
 }
 
 export type ResolvedNpcConfig = {
@@ -63,6 +67,7 @@ export type ResolvedNpcConfig = {
 	Visible: boolean,
 	CollisionGroup: string,
 	AlignRigToHitbox: boolean,
+	Variant: number,
 }
 
 -- Every property is read-only, writing one errors. Use the methods instead.
@@ -72,8 +77,11 @@ export type NpcRecord = {
 	Data: { [any]: any },
 	CustomData: CustomData,
 	Config: ResolvedNpcConfig,
-	-- The rig in ReplicatedStorage. Clients render it, the server never moves it.
-	Model: Model,
+	-- The model passed to NpcService.create. It's replicated once per template,
+	-- not per NPC, and clients render their own clones of it. There is no
+	-- per-NPC rig on the server.
+	Template: Model,
+	Variant: number,
 	-- Server-only anchored part used for motion and hit detection.
 	Hitbox: Part,
 	-- Center of the hitbox, rotated by Heading.

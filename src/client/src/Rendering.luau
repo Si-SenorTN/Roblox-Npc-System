@@ -1,5 +1,7 @@
 --!strict
--- Moves rigs in and out of the world. Reparenting a rig is the expensive part
+-- Moves rigs in and out of the world. Each NPC's rig is cloned from its
+-- template the first time it's shown, so NPCs never shown cost nothing.
+-- Reparenting a rig is the expensive part
 -- (Humanoid, Animator and physics all react), and moving hundreds of rigs in
 -- one frame isn't free either, so:
 -- - Hidden rigs are parked out of sight first and only reparented after
@@ -30,7 +32,22 @@ local hideQueue: { [Internal]: true } = {}
 local showQueue: { [Internal]: true } = {}
 local detachQueue: { [Internal]: true } = {}
 
-local function show(internal: Internal, model: Model, batch: MoveBatch)
+-- Returns false while the NPC's template hasn't replicated yet
+local function show(internal: Internal, batch: MoveBatch): boolean
+	local model: Model
+	local created = false
+	local existing = internal.Model
+	if existing then
+		model = existing
+	else
+		local new = NpcRecord.createModel(internal)
+		if new == nil then
+			return false
+		end
+		model = new
+		created = true
+	end
+
 	if internal._placement == "Detached" then
 		model:PivotTo(internal.CFrame)
 		model.Parent = internal._context.render
@@ -39,7 +56,14 @@ local function show(internal: Internal, model: Model, batch: MoveBatch)
 		NpcRecord.placeModel(internal, model, internal.CFrame, batch)
 	end
 	internal._placement = "Attached"
+
+	-- In the world and in place, but not yet counted as rendered, so visuals
+	-- set up here are ready before anything reacts to RenderedChanged
+	if created then
+		internal.ModelAdded:Fire(model)
+	end
 	NpcRecord.setRendered(internal, true)
+	return true
 end
 
 local function park(internal: Internal, model: Model, now: number, batch: MoveBatch)
@@ -74,11 +98,12 @@ end
 
 -- Runs once per frame for every NPC, after culling. Only queues work.
 function Rendering.updateRecord(internal: Internal, now: number)
-	if internal.Model == nil then
-		dequeue(internal)
+	-- The rig was destroyed from outside, a new one is made next time it's shown
+	if internal.Model == nil and internal._placement ~= "Detached" then
+		hideQueue[internal] = nil
+		detachQueue[internal] = nil
 		internal._placement = "Detached"
 		NpcRecord.setRendered(internal, false)
-		return
 	end
 
 	local placement = internal._placement
@@ -126,14 +151,14 @@ function Rendering.endFrame(focus: Vector3, now: number, batch: MoveBatch)
 			return distances[a] < distances[b]
 		end)
 
-		for index, internal in queued do
-			if index > 1 and os.clock() - start >= budget then
+		local shown = 0
+		for _, internal in queued do
+			if shown > 0 and os.clock() - start >= budget then
 				break
 			end
-			showQueue[internal] = nil
-			local model = internal.Model
-			if model then
-				show(internal, model, batch)
+			if show(internal, batch) then
+				showQueue[internal] = nil
+				shown += 1
 			end
 		end
 	end

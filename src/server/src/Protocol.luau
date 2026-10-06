@@ -5,7 +5,9 @@
 local Protocol = {}
 
 Protocol.FOLDER_NAME = "NpcSystem"
-Protocol.RIGS_FOLDER_NAME = "Rigs"
+-- Each template rig is replicated here once, named by its template id. Clients
+-- clone their own rigs from these, nothing per NPC is replicated as instances.
+Protocol.TEMPLATES_FOLDER_NAME = "Templates"
 Protocol.RELIABLE_NAME = "Reliable"
 Protocol.UNRELIABLE_NAME = "Unreliable"
 
@@ -17,9 +19,10 @@ Protocol.VELOCITY_SIZE = 6
 -- Server -> client reliable packets: u32 timestamp, followed by any number of
 -- [u8 opcode, payload] records.
 Protocol.Op = table.freeze({
-	-- u16 id, position, velocity, u8 heading, f32 health, f32 maxHealth,
-	-- f32 replicationHz, u8 visible. CustomData travels in the extras array,
-	-- one entry per Spawn record, in order.
+	-- u16 id, u16 templateId, f32 x3 rigOffset, position, velocity, u8 heading,
+	-- f32 health, f32 maxHealth, f32 replicationHz, u32 variant, u8 visible.
+	-- rigOffset is where the rig's pivot goes, in the template pivot's space.
+	-- CustomData travels in the extras array, one entry per Spawn, in order.
 	Spawn = 1,
 	-- u16 id
 	Despawn = 2,

@@ -21,7 +21,9 @@ type TimelineEvent =
 	| { kind: "Despawn", t: number }
 
 export type Context = {
-	-- Where hidden rigs live (the folder the server puts them in)
+	-- Replicated template rigs, named by template id
+	templates: Folder,
+	-- Where detached rigs wait, outside the world
 	rigs: Folder,
 	-- Where visible rigs are rendered
 	render: Folder,
@@ -32,6 +34,8 @@ export type Context = {
 export type Internal = {
 	Id: number,
 	CustomData: Types.CustomData,
+	Variant: number,
+	TemplateId: number,
 	Model: Model?,
 	CFrame: CFrame,
 	Position: Vector3,
@@ -56,6 +60,7 @@ export type Internal = {
 	Died: Signal.Signal<()>,
 	VisibilityChanged: Signal.Signal<boolean>,
 	RenderedChanged: Signal.Signal<boolean>,
+	ModelAdded: Signal.Signal<Model>,
 
 	_context: Context,
 	-- Server timestamped transforms, oldest first. keyframes[1] is the last
@@ -76,6 +81,8 @@ export type Internal = {
 	-- Set when the render timeline passes a teleport
 	_teleported: boolean,
 	_humanoid: Humanoid?,
+	-- Where the rig's pivot goes, in the template pivot's space
+	_rigOffset: Vector3,
 	-- Where the rig physically is, owned by the Rendering module
 	_placement: Placement,
 	-- When a parked rig gets detached, in os.clock() time
@@ -197,12 +204,15 @@ end
 function NpcRecord.new(
 	id: number,
 	t: number,
+	templateId: number,
+	rigOffset: Vector3,
 	position: Vector3,
 	velocity: Vector3,
 	heading: number,
 	health: number,
 	maxHealth: number,
 	replicationHz: number,
+	variant: number,
 	visible: boolean,
 	customData: Types.CustomData,
 	context: Context,
@@ -211,6 +221,8 @@ function NpcRecord.new(
 	local internal: Internal = {
 		Id = id,
 		CustomData = table.freeze(customData),
+		Variant = variant,
+		TemplateId = templateId,
 		Model = nil,
 		CFrame = CFrame.new(position) * CFrame.Angles(0, heading, 0),
 		Position = position,
@@ -237,6 +249,7 @@ function NpcRecord.new(
 		Died = Signal.new(),
 		VisibilityChanged = Signal.new(),
 		RenderedChanged = Signal.new(),
+		ModelAdded = Signal.new(),
 
 		_context = context,
 		_keyframes = { { t = t, position = position, velocity = velocity, heading = heading, snap = true } },
@@ -251,6 +264,7 @@ function NpcRecord.new(
 		_cullSettingsChanged = false,
 		_teleported = false,
 		_humanoid = nil,
+		_rigOffset = rigOffset,
 		_placement = "Detached",
 		_detachAt = 0,
 		_bulkRoot = nil,
@@ -277,9 +291,32 @@ function NpcRecord.new(
 	return internal, record
 end
 
--- The rig stays where the server put it until the Rendering module shows it.
-function NpcRecord.attachModel(self: Internal, model: Model)
+-- Clones this NPC's rig from its template, lined up with the hitbox. Returns
+-- nil while the template hasn't replicated yet. Called by the Rendering
+-- module the first time the NPC is shown, so NPCs never shown cost nothing.
+function NpcRecord.createModel(self: Internal): Model?
+	local template = self._context.templates:FindFirstChild(tostring(self.TemplateId))
+	if template == nil or not template:IsA("Model") then
+		return nil
+	end
+
+	local model = template:Clone()
+	model.Name = tostring(self.Id)
+	model:SetAttribute("NpcId", self.Id)
+
+	local rigOffset = self._rigOffset
+	if rigOffset ~= Vector3.zero then
+		local aligned = model:GetPivot() * CFrame.new(rigOffset)
+		local primaryPart = model.PrimaryPart
+		if primaryPart then
+			primaryPart.PivotOffset = primaryPart.CFrame:ToObjectSpace(aligned)
+		else
+			model.WorldPivot = aligned
+		end
+	end
+
 	self.Model = model
+	self._bulkChecked = false
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		self._humanoid = humanoid
@@ -293,6 +330,7 @@ function NpcRecord.attachModel(self: Internal, model: Model)
 			self._bulkRoot = nil
 		end
 	end)
+	return model
 end
 
 -- Decides once, after the rig first enters the world, whether moving its
@@ -506,6 +544,7 @@ function NpcRecord.destroy(self: Internal)
 	self.Died:Destroy()
 	self.VisibilityChanged:Destroy()
 	self.RenderedChanged:Destroy()
+	self.ModelAdded:Destroy()
 	StateMachine.destroy(self.StateMachine)
 end
 

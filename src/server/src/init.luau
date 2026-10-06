@@ -7,6 +7,7 @@ local Config = require(script.Config)
 local Network = require(script.Network)
 local NpcRecord = require(script.NpcRecord)
 local Protocol = require(script.Protocol)
+local Templates = require(script.Templates)
 local Types = require(script.serverNpcTypes)
 
 export type NpcRecord = Types.NpcRecord
@@ -151,8 +152,8 @@ function NpcService.start()
 	started = true
 
 	local instances = Network.start(onPlayerReady)
+	Templates.start(instances.templates)
 	context = {
-		rigs = instances.rigs,
 		hitboxes = instances.hitboxes,
 		onDestroyed = onDestroyed,
 	}
@@ -166,7 +167,10 @@ function NpcService.start()
 	RunService.Heartbeat:Connect(onHeartbeat)
 end
 
--- Clones `template` into a new NPC. The template itself is never modified.
+-- Creates an NPC rendered as `template`. The template is replicated to clients
+-- once, the first time it's used, and each client clones its own rigs from
+-- it. Changes to the template after that first use aren't picked up, and it
+-- is never modified itself.
 function NpcService.create(template: Model, config: NpcConfig?): NpcRecord
 	local currentContext = context
 	assert(currentContext, "Call NpcService.start() before creating NPCs")

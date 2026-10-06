@@ -25,6 +25,7 @@ local KNOWN_KEYS: { [string]: boolean } = {
 	Visible = true,
 	CollisionGroup = true,
 	AlignRigToHitbox = true,
+	Variant = true,
 }
 
 local Config = {}
@@ -95,6 +96,12 @@ function Config.resolve(input: NpcConfig?, template: Model): ResolvedNpcConfig
 	local turnSpeed = if config.TurnSpeed == nil then 4 * math.pi else config.TurnSpeed
 	assert(typeof(turnSpeed) == "number" and turnSpeed > 0, "NpcConfig.TurnSpeed must be a positive number")
 
+	local variant = if config.Variant == nil then 0 else config.Variant
+	assert(
+		typeof(variant) == "number" and variant >= 0 and variant <= 4294967295 and variant % 1 == 0,
+		"NpcConfig.Variant must be a whole number from 0 to 4294967295"
+	)
+
 	local collisionGroup = if config.CollisionGroup == nil then "Default" else config.CollisionGroup
 	assert(typeof(collisionGroup) == "string", "NpcConfig.CollisionGroup must be a string")
 
@@ -117,6 +124,7 @@ function Config.resolve(input: NpcConfig?, template: Model): ResolvedNpcConfig
 		Visible = flag(config.Visible, true, "Visible"),
 		CollisionGroup = collisionGroup,
 		AlignRigToHitbox = flag(config.AlignRigToHitbox, true, "AlignRigToHitbox"),
+		Variant = variant,
 	}
 
 	return freeze(resolved)

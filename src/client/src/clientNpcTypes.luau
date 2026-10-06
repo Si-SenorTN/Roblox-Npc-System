@@ -34,7 +34,12 @@ export type StateMachine = {
 export type NpcRecord = {
 	Id: number,
 	CustomData: CustomData,
-	-- The rig, once it has replicated. nil after it's destroyed.
+	-- The number the server set in NpcConfig.Variant
+	Variant: number,
+	-- Which replicated template this NPC's rig is cloned from
+	TemplateId: number,
+	-- This client's own clone of the template. nil until the NPC is first
+	-- shown (see ModelAdded), and after it's destroyed.
 	Model: Model?,
 	-- Interpolated center of the server hitbox, rotated by Heading
 	CFrame: CFrame,
@@ -78,6 +83,9 @@ export type NpcRecord = {
 	VisibilityChanged: Signal.Signal<boolean>,
 	-- (isRendered) The rig entered or left the world
 	RenderedChanged: Signal.Signal<boolean>,
+	-- (model) Fires once when the rig is created, right after it enters the
+	-- world and before IsRendered turns true. Set up visuals here.
+	ModelAdded: Signal.Signal<Model>,
 
 	-- false keeps the NPC rendered at any distance (while Visible)
 	SetCullingEnabled: (self: NpcRecord, enabled: boolean) -> (),

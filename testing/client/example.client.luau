@@ -7,6 +7,12 @@ local NpcController = require(ReplicatedStorage.Packages.NpcController)
 
 local CULL_DISTANCE = 300
 
+local modelsAdded = 0
+NpcController.ModelAdded:Connect(function(_npc, model)
+	assert(model.Parent ~= nil, "ModelAdded should fire with the rig in the world")
+	modelsAdded += 1
+end)
+
 NpcController.NpcAdded:Connect(function(npc)
 	npc.Died:Connect(function()
 		print(`[test] client saw {npc.CustomData.Name} die`)
@@ -42,11 +48,16 @@ while true do
 	local rendered, culled, wrongShown, wrongHidden = 0, 0, 0, 0
 	local placements: { [string]: number } = { Attached = 0, Parked = 0, Detached = 0 }
 	local healthMismatches = 0
+	local variantMismatches = 0
 	local records = NpcController.getRecords()
 	for _, npc in records do
 		local distance = (npc.Position - camera).Magnitude
 		if npc.IsRendered then
 			rendered += 1
+		end
+		local index = tonumber(string.match(npc.CustomData.Name, "%d+"))
+		if index and npc.Variant ~= index % 4 then
+			variantMismatches += 1
 		end
 		local placement = (npc :: any)._placement
 		placements[placement] += 1
@@ -68,7 +79,10 @@ while true do
 			.. `wrongly culled {wrongHidden}, wrongly shown {wrongShown}, `
 			.. `{string.format("%.1f", checks / math.max(frames, 1))} checks/frame, `
 			.. `attached {placements.Attached}, parked {placements.Parked}, detached {placements.Detached}, `
-			.. `humanoid health mismatches {healthMismatches}`
+			.. `humanoid health mismatches {healthMismatches}, variant mismatches {variantMismatches}, `
+			.. `models created {modelsAdded}, replicated NpcSystem instances {#ReplicatedStorage
+				:WaitForChild("NpcSystem")
+				:GetDescendants()}`
 	)
 	checks, frames = 0, 0
 end

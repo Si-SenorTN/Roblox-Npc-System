@@ -22,6 +22,7 @@ local function spawnNpc(index: number)
 		SpawnCFrame = CFrame.new(randomPoint() + Vector3.new(0, 5, 0)),
 		ThinkHz = 2,
 		CustomData = { Name = `Npc{index}` },
+		Variant = index % 4,
 	})
 
 	npc.Think:Connect(function()

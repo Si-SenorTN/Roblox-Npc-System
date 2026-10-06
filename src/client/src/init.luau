@@ -31,6 +31,8 @@ local CLOCK_SNAP = 0.25
 
 local npcAdded: Signal.Signal<NpcRecord> = Signal.new()
 local npcRemoving: Signal.Signal<NpcRecord> = Signal.new()
+local modelAdded: Signal.Signal<NpcRecord, Model> = Signal.new()
+local renderedChanged: Signal.Signal<NpcRecord, boolean> = Signal.new()
 
 local NpcController = {
 	Name = "NpcController",
@@ -39,13 +41,17 @@ local NpcController = {
 	NpcAdded = npcAdded,
 	-- Fires right before an NPC is destroyed
 	NpcRemoving = npcRemoving,
+	-- (record, model) Fires once per NPC when its rig is created, right after
+	-- it enters the world and before it counts as rendered. Set up visuals
+	-- here. Same as each record's ModelAdded.
+	ModelAdded = modelAdded,
+	-- (record, isRendered) Same as each record's RenderedChanged.
+	RenderedChanged = renderedChanged,
 }
 
 local started = false
 local internalsById: { [number]: Internal } = {}
 local recordsById: { [number]: NpcRecord } = {}
--- Records whose rig hasn't replicated yet, by rig name
-local pendingModels: { [string]: Internal } = {}
 -- Smoothed age of incoming packets, measured on the synced server clock
 local latency = 0
 local renderClock: number? = nil
@@ -63,11 +69,6 @@ local function removeRecord(internal: Internal)
 	local record = recordsById[id]
 	internalsById[id] = nil
 	recordsById[id] = nil
-	local name = tostring(id)
-	if pendingModels[name] == internal then
-		pendingModels[name] = nil
-	end
-
 	npcRemoving:Fire(record)
 	Culling.untrack(internal)
 	Rendering.untrack(internal)
@@ -78,12 +79,15 @@ local function spawn(
 	currentContext: NpcRecord.Context,
 	t: number,
 	id: number,
+	templateId: number,
+	rigOffset: Vector3,
 	position: Vector3,
 	velocity: Vector3,
 	heading: number,
 	health: number,
 	maxHealth: number,
 	replicationHz: number,
+	variant: number,
 	visible: boolean,
 	customData: CustomData
 )
@@ -96,12 +100,15 @@ local function spawn(
 	local internal, record = NpcRecord.new(
 		id,
 		t,
+		templateId,
+		rigOffset,
 		position,
 		velocity,
 		heading,
 		health,
 		maxHealth,
 		replicationHz,
+		variant,
 		visible,
 		customData,
 		currentContext,
@@ -111,13 +118,12 @@ local function spawn(
 	recordsById[id] = record
 	Culling.track(internal)
 
-	local name = tostring(id)
-	local model = currentContext.rigs:FindFirstChild(name)
-	if model and model:IsA("Model") then
-		NpcRecord.attachModel(internal, model)
-	else
-		pendingModels[name] = internal
-	end
+	internal.ModelAdded:Connect(function(model)
+		modelAdded:Fire(record, model)
+	end)
+	internal.RenderedChanged:Connect(function(rendered)
+		renderedChanged:Fire(record, rendered)
+	end)
 
 	npcAdded:Fire(record)
 end
@@ -147,16 +153,23 @@ local function onReliable(currentContext: NpcRecord.Context, payload: unknown, e
 				currentContext,
 				t,
 				id,
-				Protocol.readPosition(payload, cursor),
-				Protocol.readVelocity(payload, cursor + 9),
-				Protocol.decodeHeading(buffer.readu8(payload, cursor + 15)),
-				buffer.readf32(payload, cursor + 16),
-				buffer.readf32(payload, cursor + 20),
-				buffer.readf32(payload, cursor + 24),
-				buffer.readu8(payload, cursor + 28) == 1,
+				buffer.readu16(payload, cursor),
+				Vector3.new(
+					buffer.readf32(payload, cursor + 2),
+					buffer.readf32(payload, cursor + 6),
+					buffer.readf32(payload, cursor + 10)
+				),
+				Protocol.readPosition(payload, cursor + 14),
+				Protocol.readVelocity(payload, cursor + 23),
+				Protocol.decodeHeading(buffer.readu8(payload, cursor + 29)),
+				buffer.readf32(payload, cursor + 30),
+				buffer.readf32(payload, cursor + 34),
+				buffer.readf32(payload, cursor + 38),
+				buffer.readu32(payload, cursor + 42),
+				buffer.readu8(payload, cursor + 46) == 1,
 				if typeof(customData) == "table" then customData else {}
 			)
-			cursor += 29
+			cursor += 47
 		elseif op == Op.Despawn then
 			if internal then
 				NpcRecord.addDespawnEvent(internal, t)
@@ -268,7 +281,7 @@ function NpcController.start()
 	started = true
 
 	local root = ReplicatedStorage:WaitForChild(Protocol.FOLDER_NAME)
-	local rigs = waitForChildOfClass(root, Protocol.RIGS_FOLDER_NAME, "Folder") :: Folder
+	local templates = waitForChildOfClass(root, Protocol.TEMPLATES_FOLDER_NAME, "Folder") :: Folder
 	local reliable = waitForChildOfClass(root, Protocol.RELIABLE_NAME, "RemoteEvent") :: RemoteEvent
 	local unreliable =
 		waitForChildOfClass(root, Protocol.UNRELIABLE_NAME, "UnreliableRemoteEvent") :: UnreliableRemoteEvent
@@ -277,15 +290,12 @@ function NpcController.start()
 	render.Name = "Npcs"
 	render.Parent = Workspace
 
-	local currentContext: NpcRecord.Context = { rigs = rigs, render = render }
+	-- Detached rigs stay in the DataModel, so whatever set them up keeps working
+	local rigs = Instance.new("Folder")
+	rigs.Name = "NpcRigs"
+	rigs.Parent = ReplicatedStorage
 
-	rigs.ChildAdded:Connect(function(child)
-		local internal = pendingModels[child.Name]
-		if internal and child:IsA("Model") then
-			pendingModels[child.Name] = nil
-			NpcRecord.attachModel(internal, child)
-		end
-	end)
+	local currentContext: NpcRecord.Context = { templates = templates, rigs = rigs, render = render }
 
 	reliable.OnClientEvent:Connect(function(payload: unknown, extras: unknown)
 		onReliable(currentContext, payload, extras)

@@ -4,13 +4,13 @@ local Workspace = game:GetService("Workspace")
 local Signal = require(script.Parent.Parent.Signal)
 local Network = require(script.Parent.Network)
 local Protocol = require(script.Parent.Protocol)
+local Templates = require(script.Parent.Templates)
 local Types = require(script.Parent.serverNpcTypes)
 
 type NpcRecord = Types.NpcRecord
 type ResolvedNpcConfig = Types.ResolvedNpcConfig
 
 export type Context = {
-	rigs: Folder,
 	hitboxes: Camera,
 	onDestroyed: (Internal) -> (),
 }
@@ -29,7 +29,8 @@ export type Internal = {
 	Data: { [any]: any },
 	CustomData: Types.CustomData,
 	Config: ResolvedNpcConfig,
-	Model: Model,
+	Template: Model,
+	Variant: number,
 	Hitbox: Part,
 	CFrame: CFrame,
 	Position: Vector3,
@@ -52,6 +53,9 @@ export type Internal = {
 	Cleanup: Signal.Signal<()>,
 
 	_context: Context,
+	_template: Templates.Entry,
+	-- Sent to clients so their rig lines up with the hitbox
+	_rigOffset: Vector3,
 	_raycastParams: RaycastParams,
 	_halfHeight: number,
 	_sweepSize: Vector3,
@@ -99,9 +103,6 @@ local VELOCITY_TOLERANCE = 0.25
 local MIN_SPEED = 0.01
 -- Longest single motion step, in seconds
 local MAX_MOTION_STEP = 0.25
--- Seconds the rig outlives its record, so clients finish rendering first.
--- 2 replication intervals are added on top, matching the client's buffer.
-local DESPAWN_GRACE = 2
 
 local NpcRecord = {}
 
@@ -325,55 +326,20 @@ local function stepMotion(self: Internal, dt: number, now: number): boolean
 	return changed
 end
 
-local function prepareRig(model: Model, config: ResolvedNpcConfig)
-	local primaryPart = model.PrimaryPart
-
-	-- Only the root is anchored so Motor6D animations still work on clients.
-	-- Without a PrimaryPart there's no root to hang the rest from.
-	if primaryPart then
-		primaryPart.Anchored = true
-	else
-		for _, descendant in model:GetDescendants() do
-			if descendant:IsA("BasePart") then
-				descendant.Anchored = true
-			end
-		end
-	end
-
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		-- Clients only pivot the rig, the state machine is wasted work
-		humanoid.EvaluateStateMachine = false
-	end
-
-	if config.AlignRigToHitbox then
-		local pivot = model:GetPivot()
-		local boxCFrame, boxSize = model:GetBoundingBox()
-		local bottom = boxCFrame.Position - boxCFrame.UpVector * (boxSize.Y / 2)
-		local aligned = pivot.Rotation + bottom + pivot.UpVector * (config.HitboxSize.Y / 2)
-		if primaryPart then
-			primaryPart.PivotOffset = primaryPart.CFrame:ToObjectSpace(aligned)
-		else
-			model.WorldPivot = aligned
-		end
-	end
-end
-
 function NpcRecord.new(id: number, template: Model, config: ResolvedNpcConfig, context: Context): (Internal, NpcRecord)
-	local model: Model? = template:Clone()
-	assert(model, "The template couldn't be cloned, make sure it is Archivable")
-
-	model.Name = tostring(id)
-	model.ModelStreamingMode = Enum.ModelStreamingMode.Atomic
-	model:SetAttribute("NpcId", id)
-	prepareRig(model, config)
+	local entry = Templates.acquire(template)
 
 	local spawnCFrame = config.SpawnCFrame
 	local look = spawnCFrame.LookVector
 	local heading = if math.abs(look.X) + math.abs(look.Z) > 1e-3 then headingFromDirection(look) else 0
 	local cframe = CFrame.new(spawnCFrame.Position) * CFrame.Angles(0, heading, 0)
-	model:PivotTo(cframe)
-	model.Parent = context.rigs
+
+	-- Where clients put their rig's pivot, in the template pivot's space:
+	-- bounding box bottom on the hitbox bottom, so the pivot lands on the
+	-- hitbox center
+	local rigOffset = if config.AlignRigToHitbox
+		then entry.bottom + Vector3.new(0, config.HitboxSize.Y / 2, 0)
+		else Vector3.zero
 
 	local hitbox = Instance.new("Part")
 	hitbox.Name = tostring(id)
@@ -408,7 +374,8 @@ function NpcRecord.new(id: number, template: Model, config: ResolvedNpcConfig, c
 		Data = {},
 		CustomData = config.CustomData,
 		Config = config,
-		Model = model,
+		Template = template,
+		Variant = config.Variant,
 		Hitbox = hitbox,
 		CFrame = cframe,
 		Position = cframe.Position,
@@ -431,6 +398,8 @@ function NpcRecord.new(id: number, template: Model, config: ResolvedNpcConfig, c
 		Cleanup = cleanup,
 
 		_context = context,
+		_template = entry,
+		_rigOffset = rigOffset,
 		_raycastParams = raycastParams,
 		_halfHeight = config.HitboxSize.Y / 2,
 		_sweepSize = Vector3.new(blockcastSize.X, sweepHeight, blockcastSize.Z),
@@ -481,12 +450,15 @@ function NpcRecord.writeSpawn(self: Internal, player: Player)
 	Network.writeSpawn(
 		player,
 		self.Id,
+		self._template.id,
+		self._rigOffset,
 		position,
 		velocity,
 		self.Heading,
 		self.Health,
 		self.MaxHealth,
 		self.ReplicationHz,
+		self.Variant,
 		isVisibleTo(self, player),
 		self.CustomData
 	)
@@ -798,12 +770,7 @@ function Methods.Destroy(record: NpcRecord)
 
 	self.Hitbox:Destroy()
 
-	-- Rename so a recycled id can't be matched to this rig by clients
-	local model = self.Model
-	model.Name = "Despawned"
-	task.delay(DESPAWN_GRACE + 2 / self.ReplicationHz, function()
-		model:Destroy()
-	end)
+	Templates.release(self._template)
 
 	self.Think:Destroy()
 	self.HealthChanged:Destroy()

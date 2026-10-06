@@ -18,7 +18,7 @@ type Writer = {
 }
 
 export type Instances = {
-	rigs: Folder,
+	templates: Folder,
 	-- Parts inside a Camera are in the physics world but never replicate.
 	hitboxes: Camera,
 }
@@ -61,9 +61,9 @@ function Network.start(onPlayerReady: (Player) -> ()): Instances
 	local root = Instance.new("Folder")
 	root.Name = Protocol.FOLDER_NAME
 
-	local rigs = Instance.new("Folder")
-	rigs.Name = Protocol.RIGS_FOLDER_NAME
-	rigs.Parent = root
+	local templates = Instance.new("Folder")
+	templates.Name = Protocol.TEMPLATES_FOLDER_NAME
+	templates.Parent = root
 
 	local reliable = Instance.new("RemoteEvent")
 	reliable.Name = Protocol.RELIABLE_NAME
@@ -107,7 +107,7 @@ function Network.start(onPlayerReady: (Player) -> ()): Instances
 		writers[player] = nil
 	end)
 
-	return { rigs = rigs, hitboxes = hitboxes }
+	return { templates = templates, hitboxes = hitboxes }
 end
 
 -- Players whose client has finished loading. Don't mutate the returned array.
@@ -122,25 +122,33 @@ end
 function Network.writeSpawn(
 	player: Player,
 	id: number,
+	templateId: number,
+	rigOffset: Vector3,
 	position: Vector3,
 	velocity: Vector3,
 	heading: number,
 	health: number,
 	maxHealth: number,
 	replicationHz: number,
+	variant: number,
 	visible: boolean,
 	customData: { [string]: any }
 )
-	local b, offset = reserve(player, 32)
+	local b, offset = reserve(player, 50)
 	buffer.writeu8(b, offset, Op.Spawn)
 	buffer.writeu16(b, offset + 1, id)
-	Protocol.writePosition(b, offset + 3, position)
-	Protocol.writeVelocity(b, offset + 12, velocity)
-	buffer.writeu8(b, offset + 18, Protocol.encodeHeading(heading))
-	buffer.writef32(b, offset + 19, health)
-	buffer.writef32(b, offset + 23, maxHealth)
-	buffer.writef32(b, offset + 27, replicationHz)
-	buffer.writeu8(b, offset + 31, if visible then 1 else 0)
+	buffer.writeu16(b, offset + 3, templateId)
+	buffer.writef32(b, offset + 5, rigOffset.X)
+	buffer.writef32(b, offset + 9, rigOffset.Y)
+	buffer.writef32(b, offset + 13, rigOffset.Z)
+	Protocol.writePosition(b, offset + 17, position)
+	Protocol.writeVelocity(b, offset + 26, velocity)
+	buffer.writeu8(b, offset + 32, Protocol.encodeHeading(heading))
+	buffer.writef32(b, offset + 33, health)
+	buffer.writef32(b, offset + 37, maxHealth)
+	buffer.writef32(b, offset + 41, replicationHz)
+	buffer.writeu32(b, offset + 45, variant)
+	buffer.writeu8(b, offset + 49, if visible then 1 else 0)
 	table.insert(writers[player].extras, customData)
 end
 
