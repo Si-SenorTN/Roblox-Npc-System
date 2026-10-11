@@ -274,19 +274,23 @@ local function stepMotion(self: Internal, dt: number, now: number): boolean
 	local feet = position - Vector3.new(0, self._halfHeight, 0)
 
 	if moving then
-		local origin = feet + Vector3.new(0, self._sweepLift, 0)
-		local moved, normal = sweep(self, origin, rotation, displacement)
-		if normal then
-			-- Slide along whatever was hit
-			local flatNormal = Vector3.new(normal.X, 0, normal.Z)
-			if flatNormal.Magnitude > 1e-3 then
-				flatNormal = flatNormal.Unit
-				local remaining = displacement - moved
-				local slide = remaining - flatNormal * remaining:Dot(flatNormal)
-				moved += sweep(self, origin + moved, rotation, slide)
+		if self.Config.Phase then
+			feet += displacement
+		else
+			local origin = feet + Vector3.new(0, self._sweepLift, 0)
+			local moved, normal = sweep(self, origin, rotation, displacement)
+			if normal then
+				-- Slide along whatever was hit
+				local flatNormal = Vector3.new(normal.X, 0, normal.Z)
+				if flatNormal.Magnitude > 1e-3 then
+					flatNormal = flatNormal.Unit
+					local remaining = displacement - moved
+					local slide = remaining - flatNormal * remaining:Dot(flatNormal)
+					moved += sweep(self, origin + moved, rotation, slide)
+				end
 			end
+			feet += moved
 		end
-		feet += moved
 	end
 
 	-- Probe down from StepHeight above the feet: steps up onto anything

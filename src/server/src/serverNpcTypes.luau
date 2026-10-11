@@ -29,6 +29,8 @@ export type NpcConfig = {
 	StepHeight: number?,
 	-- Defaults to Workspace.Gravity at creation.
 	Gravity: number?,
+	-- Phase through objects. Good for never getting stuck on things.
+	Phase: boolean?,
 	-- Turn to face the movement direction. Default true.
 	AutoRotate: boolean?,
 	-- Radians per second when AutoRotate turns the NPC. Default 4π.
@@ -61,6 +63,7 @@ export type ResolvedNpcConfig = {
 	WalkSpeed: number,
 	StepHeight: number,
 	Gravity: number,
+	Phase: boolean,
 	AutoRotate: boolean,
 	TurnSpeed: number,
 	MoveToTimeout: number,
